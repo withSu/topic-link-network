@@ -788,3 +788,55 @@ class RealtimeAssociativeChatbot:
             task.cancel()
         
         logger.info("System shutdown completed")
+    # chatbot.py의 시각화 메서드들 수정
+    
+    async def visualize_topic_internal(self, topic: str, save_path: str = None) -> Optional[str]:
+        """
+        특정 토픽의 내부 연결만 시각화 (선택한 토픽, 그 서브토픽, 관련 키워드만 포함)
+        
+        Args:
+            topic: 시각화할 토픽
+            save_path: 저장 경로
+            
+        Returns:
+            저장된 파일 경로 또는 None
+        """
+        from utils.visualization import visualize_topic_internal
+        return visualize_topic_internal(
+            graph=self.association_network.graph,
+            topic=topic,
+            save_path=save_path,
+            show=False  # show=False로 설정하여 두 번 표시되는 것 방지
+        )
+
+    async def visualize_all_connections(self, save_path: str = None) -> Optional[str]:
+        """
+        모든 연결 시각화 (전체 그래프)
+        
+        Args:
+            save_path: 저장 경로
+            
+        Returns:
+            저장된 파일 경로 또는 None
+        """
+        from utils.visualization import visualize_association_network
+        return visualize_association_network(
+            graph=self.association_network.graph,
+            center_concept=None,  # 중심 개념 없음 (전체 그래프)
+            save_path=save_path,
+            show=False,  # show=False로 설정하여 두 번 표시되는 것 방지
+            title_prefix="전체 연관 네트워크"
+        )
+
+    async def visualize_topics_network(self, save_path: str = None) -> Optional[str]:
+        """
+        토픽 간 연결만 시각화
+        """
+        from utils.visualization import visualize_topics_network
+        return visualize_topics_network(
+            graph=self.association_network.graph,
+            topic_nodes=None,  # 자동으로 토픽 노드 식별
+            save_path=save_path,
+            show=False,  # show=False로 설정하여 두 번 표시되는 것 방지
+            title_prefix="토픽 간 연결 네트워크"
+        )

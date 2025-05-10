@@ -1,6 +1,5 @@
-# visualization.py 개선 버전
 """
-네트워크 시각화 모듈 - 토픽과 서브토픽 구분 개선
+네트워크 시각화 모듈 - 연결 강도 기반 시각화 개선
 """
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -8,10 +7,11 @@ import numpy as np
 from datetime import datetime
 from typing import Optional, Dict
 import matplotlib.font_manager as fm
+from typing import Optional, Dict, List  # List 추가
 import os
 import matplotlib.colors as mcolors
 
-# 한글 폰트 설정 함수는 그대로 유지
+# 한글 폰트 설정 개선
 def set_korean_font():
     """
     시스템에 설치된 한글 폰트를 찾아 설정
@@ -58,7 +58,7 @@ def visualize_association_network(
     title_prefix: str = "연관 네트워크"
 ) -> Optional[str]:
     """
-    연관 네트워크 시각화 - 토픽과 서브토픽 구분 개선 버전
+    연관 네트워크 시각화 - 연결 강도 기반 개선 버전
     
     Args:
         graph: NetworkX 그래프
@@ -70,30 +70,21 @@ def visualize_association_network(
     Returns:
         저장된 파일 경로 또는 None
     """
-    if not graph.has_node(center_concept):
+    if center_concept and not graph.has_node(center_concept):
         print(f"경고: '{center_concept}' 개념이 그래프에 없습니다.")
         return None
         
     # 한글 폰트 설정
-    font_name = set_korean_font()
+    try:
+        font_name = set_korean_font()
+    except Exception:
+        font_name = 'sans-serif'
 
     # 피규어 설정 (크기 증가)
-    # visualization.py 수정 부분 - 새로운 방법
-
-    # 피규어 크기 자체를 더 키우고 비율 조절
-    plt.figure(figsize=(22, 18), dpi=100)  # 높이를 더 키움
-
-    # 제목을 피규어 전체 제목 대신 Axes 내부 제목으로 설정
-    plt.suptitle(title, fontsize=24, fontweight='bold', y=0.98)  # suptitle 사용
-    # 또는
-    plt.gca().set_title(title, fontsize=24, fontweight='bold', pad=30)  # 축 제목 사용
-
-    # 또는 제목을 텍스트로 추가
-    plt.text(0.5, 0.97, title, 
-            horizontalalignment='center',
-            fontsize=24, fontweight='bold',
-            transform=plt.gca().transAxes)  # 축 좌표계 사용
-
+    plt.figure(figsize=(20, 18), dpi=100)  # 더 큰 크기로 설정
+    
+    # 여백 설정 - 제목과 범례를 위한 공간 확보
+    plt.subplots_adjust(top=0.85, bottom=0.05, left=0.05, right=0.95)  # 상단 여백 더 크게
     
     # 서브그래프 생성 (중심 개념 기준)
     if center_concept and center_concept in graph:
@@ -112,73 +103,82 @@ def visualize_association_network(
     else:
         subgraph = graph
     
-    # 노드 속성 수집 및 명확한 구분
-    node_types = {}
+    # 노드 속성 수집
+    node_types = {}  # 토픽, 서브토픽 등 노드 유형 분류
     
-    # 모든 노드에 대해 데이터를 검사하고 타입 결정
+    # 메타데이터에서 노드 타입 가져오기 (직접 구축 시 이미 설정됨)
     for node in subgraph.nodes():
-        # 노드 메타데이터에서 타입 정보 확인
         metadata = subgraph.nodes[node].get('metadata', {})
-        node_type = metadata.get('type', '')
-        
-        # 메타데이터에 타입이 없으면 이름 기반으로 추정
-        if not node_type:
-            if node == center_concept:
-                node_type = 'topic'
-            elif any(node.startswith(prefix) for prefix in ['topic_', 'subject_']):
-                node_type = 'topic'
-            elif any(node.startswith(prefix) for prefix in ['sub_', 'subtopic_']):
-                node_type = 'subtopic'
-            else:
-                # 이웃 관계로 추정 (중심 개념의 직접 이웃은 서브토픽으로 간주)
-                if center_concept and node in graph.neighbors(center_concept):
-                    node_type = 'subtopic'
-                else:
-                    node_type = 'keyword'
-        
-        node_types[node] = node_type
+        if isinstance(metadata, dict) and 'type' in metadata:
+            node_types[node] = metadata['type']
     
-    # 노드 크기 계산 (토픽 > 서브토픽 > 키워드)
+    # 메타데이터가 없는 경우 중심 개념 기반으로 유추
+    if center_concept:
+        if center_concept not in node_types:
+            node_types[center_concept] = 'topic'
+        for neighbor in graph.neighbors(center_concept):
+            if neighbor not in node_types:
+                # 연결 유형 확인
+                edge_type = graph[center_concept][neighbor].get('type', 'semantic')
+                # 계층적 관계면 서브토픽으로 판단
+                if edge_type == 'hierarchical':
+                    node_types[neighbor] = 'subtopic'
+                else:
+                    node_types[neighbor] = 'keyword'
+            
+            # 2단계 이웃은 키워드로 간주
+            for second_neighbor in graph.neighbors(neighbor):
+                if second_neighbor != center_concept and second_neighbor not in node_types:
+                    node_types[second_neighbor] = 'keyword'
+    
+    # 노드 크기 계산 (활성화 횟수 및 노드 유형 기반)
     node_sizes = []
     for node in subgraph.nodes():
         activation_count = subgraph.nodes[node].get('activation_count', 0)
         
-        # 노드 유형에 따른 기본 크기 (명확한 구분)
-        if node_types.get(node) == 'topic':
-            base_size = 2500  # 토픽 크기 증가
-        elif node_types.get(node) == 'subtopic':
-            base_size = 1500  # 서브토픽 크기 증가
+        # 노드 유형에 따른 기본 크기
+        node_type = node_types.get(node, 'keyword')
+        if node == center_concept:
+            base_size = 2500  # 중심 노드
+        elif node_type == 'topic':
+            base_size = 2000  # 토픽
+        elif node_type == 'subtopic':
+            base_size = 1200  # 서브토픽
         else:
-            base_size = 800   # 키워드도 약간 크게
+            base_size = 800   # 키워드
             
         # 활성화 횟수에 따른 보너스 크기
         size = base_size + min(activation_count * 100, 1000)
         node_sizes.append(size)
     
-    # 노드 색상 설정 - 더 뚜렷한 색상 차이
+    # 노드 색상 설정 (개선)
     node_colors = []
     
-    # 노드 유형별 색상 (더 명확한 대비)
+    # 노드 유형별 색상
     type_colors = {
-        'topic': '#ff3333',       # 밝은 빨간색 (토픽)
-        'subtopic': '#3333ff',    # 밝은 파란색 (서브토픽)
-        'keyword': '#33cc33'      # 밝은 녹색 (키워드)
+        'topic': '#ff3333',       # 빨간색 (토픽)
+        'subtopic': '#3333ff',    # 파란색 (서브토픽)
+        'keyword': '#33cc33'      # 녹색 (키워드)
     }
     
     for node in subgraph.nodes():
-        node_type = node_types.get(node, 'keyword')
-        
-        # 중심 노드는 더 강조
         if node == center_concept:
-            # 중심 노드가 토픽이면 더 진한 빨강
-            if node_type == 'topic':
-                node_colors.append('#aa0000')  # 진한 빨강
-            else:
-                # 중심이 서브토픽이면 진한 파랑
-                node_colors.append('#0000aa')  # 진한 파랑
+            node_colors.append('#aa0000')  # 중심 노드는 진한 빨간색
         else:
-            # 다른 노드들은 노드 타입에 따른 색상
-            node_colors.append(type_colors.get(node_type, '#87CEEB'))
+            # 노드 유형 기반 색상
+            node_type = node_types.get(node, 'keyword')
+            base_color = type_colors.get(node_type, '#87CEEB')
+            
+            # 접근 최근성에 따른 투명도 조정
+            last_activated = subgraph.nodes[node].get('last_activated')
+            if last_activated:
+                time_ago = (datetime.now() - last_activated).total_seconds() / 3600
+                fade = min(time_ago / 24, 0.7)  # 24시간 기준으로 페이드 (최대 0.7)
+                # HTML 색상 코드를 RGB로 변환하고 알파 적용
+                rgb = mcolors.to_rgb(base_color)
+                node_colors.append((rgb[0], rgb[1], rgb[2], 1.0 - fade))
+            else:
+                node_colors.append(base_color)
     
     # 엣지 두께 설정 (연결 강도 기반)
     edge_widths = []
@@ -202,7 +202,7 @@ def visualize_association_network(
         # 연결 강도 기반 색상 (강한 연결=진한 색, 약한 연결=연한 색)
         if weight >= 0.7:
             # 강한 연결 (진한 색)
-            edge_colors.append((0.1, 0.1, 0.1, min(weight * 1.3, 1.0)))
+            edge_colors.append((0.1, 0.1, 0.1, min(weight * 1.2, 1.0)))
         elif weight >= 0.4:
             # 중간 연결 (중간 색)
             edge_colors.append((0.3, 0.3, 0.3, weight))
@@ -300,10 +300,9 @@ def visualize_association_network(
     # 노드 라벨
     labels = {}
     for node in subgraph.nodes():
-        # 유니코드 문자열로 변환하여 저장
+        # 토픽과 서브토픽에는 노드 타입 표시 추가
         node_type = node_types.get(node)
         
-        # 토픽과 서브토픽에는 노드 타입 표시 추가
         if node_type == 'topic':
             labels[node] = f"[토픽] {node}"  # 토픽 라벨 특별 표시
         elif node_type == 'subtopic':
@@ -344,7 +343,7 @@ def visualize_association_network(
     edge_labels = {}
     for u, v, data in subgraph.edges(data=True):
         weight = data.get('weight', 0)
-        if weight > 0.5:  # 강한 연결만 표시 (임계값 낮춤)
+        if weight > 0.6:  # 강한 연결만 표시
             edge_labels[(u, v)] = f"{weight:.2f}"
     
     nx.draw_networkx_edge_labels(
@@ -355,39 +354,39 @@ def visualize_association_network(
         bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=2)  # 배경 추가로 가독성 향상
     )
     
-    # 범례 추가 - 명확히 구분
-    plt.figtext(0.01, 0.01, "범례:", fontsize=14, fontweight='bold')
+    # 타이틀 설정 - 더 높은 위치에 배치
+    title = f"{title_prefix}: {center_concept} 중심" if center_concept else f"{title_prefix}"
+    plt.suptitle(title, fontsize=24, fontweight='bold', y=0.98)  # suptitle 사용하여 더 위에 배치
     
-    # 노드 유형 범례
-    plt.figtext(0.01, 0.97, "● 토픽 (빨간색)", fontsize=12, color='#ff3333', fontweight='bold')
-    plt.figtext(0.20, 0.97, "● 서브토픽 (파란색)", fontsize=12, color='#3333ff', fontweight='bold')
-    plt.figtext(0.45, 0.97, "● 키워드 (녹색)", fontsize=12, color='#33cc33')
+    # 범례 배경 설정 (가독성 향상)
+    legend_bg = dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.8, edgecolor='none')
     
-    # 연결 유형 범례
-    plt.figtext(0.01, 0.94, "계층적 관계: ――", fontsize=11)
-    plt.figtext(0.20, 0.94, "의미적 관계: - - -", fontsize=11)
-    plt.figtext(0.40, 0.94, "기타 관계: -·-", fontsize=11)
+    # 범례 위치 및 여백 설정 (더 위로 올림)
+    # 노드 유형 범례 (왼쪽)
+    plt.text(0.05, 0.95, "• 토픽 (빨간색)", color='#ff3333', fontweight='bold', fontsize=12, 
+             transform=plt.gcf().transFigure, bbox=legend_bg, ha='left')
+    plt.text(0.05, 0.92, "• 서브토픽 (파란색)", color='#3333ff', fontweight='bold', fontsize=12, 
+             transform=plt.gcf().transFigure, bbox=legend_bg, ha='left')
+    plt.text(0.05, 0.89, "• 키워드 (녹색)", color='#33cc33', fontsize=12, 
+             transform=plt.gcf().transFigure, bbox=legend_bg, ha='left')
     
-    # 연결 강도 범례
-    plt.figtext(0.01, 0.91, "강한 연결 (≥0.7): 굵은 선", fontsize=11)
-    plt.figtext(0.25, 0.91, "중간 연결 (0.4~0.7): 중간 선", fontsize=11)
-    plt.figtext(0.55, 0.91, "약한 연결 (<0.4): 얇은 선", fontsize=11)
+    # 연결 강도 범례 (중앙) - 추가됨
+    plt.text(0.35, 0.95, "강한 연결 (≥0.7): 굵은 선", fontsize=12, 
+             transform=plt.gcf().transFigure, bbox=legend_bg, ha='left')
+    plt.text(0.35, 0.92, "중간 연결 (0.4~0.7): 중간 선", fontsize=12, 
+             transform=plt.gcf().transFigure, bbox=legend_bg, ha='left')
+    plt.text(0.35, 0.89, "약한 연결 (<0.4): 얇은 선", fontsize=12, 
+             transform=plt.gcf().transFigure, bbox=legend_bg, ha='left')
     
-    # 타이틀 설정 - 타입 정보 추가
-    if center_concept:
-        node_type = node_types.get(center_concept, 'unknown')
-        type_name = '토픽' if node_type == 'topic' else '서브토픽' if node_type == 'subtopic' else '키워드'
-        title = f"{title_prefix}: {type_name} '{center_concept}' 중심"
-    else:
-        title = f"{title_prefix}"
-    
-    plt.title(title, fontsize=22, fontweight='bold', pad=30, y=1.05)  # y 위치와 패딩 조정
+    # 연결 유형 범례 (오른쪽)
+    plt.text(0.65, 0.95, "계층적 관계: ——", fontsize=12, 
+             transform=plt.gcf().transFigure, bbox=legend_bg, ha='left')
+    plt.text(0.65, 0.92, "의미적 관계: - - -", fontsize=12, 
+             transform=plt.gcf().transFigure, bbox=legend_bg, ha='left')
+    plt.text(0.65, 0.89, "기타 관계: -·-", fontsize=12, 
+             transform=plt.gcf().transFigure, bbox=legend_bg, ha='left')
     
     plt.axis('off')
-    plt.tight_layout()
-    
-    # 배경색 설정 - 약간 엷은 배경으로 가독성 향상
-    plt.gca().set_facecolor('#f8f8f8')
     
     # 파일 저장 또는 화면 표시
     if save_path:
@@ -400,3 +399,270 @@ def visualize_association_network(
         plt.close()
     
     return save_path
+
+def visualize_topics_network(
+    graph: nx.DiGraph,
+    topic_nodes: List[str] = None,
+    save_path: Optional[str] = None,
+    show: bool = True,
+    title_prefix: str = "토픽 간 연결 네트워크"
+) -> Optional[str]:
+    """
+    토픽 간 연결만 시각화하는 함수
+    
+    Args:
+        graph: NetworkX 그래프
+        topic_nodes: 토픽 노드 목록 (지정하지 않으면 그래프에서 추출)
+        save_path: 저장 경로
+        show: 화면 표시 여부
+        title_prefix: 제목 접두사
+        
+    Returns:
+        저장된 파일 경로 또는 None
+    """
+    # 토픽 노드 추출
+    if not topic_nodes:
+        topic_nodes = []
+        for node, data in graph.nodes(data=True):
+            # 메타데이터 확인
+            metadata = data.get('metadata', {})
+            if isinstance(metadata, dict) and metadata.get('type') == 'topic':
+                topic_nodes.append(node)
+    
+    # 토픽이 없으면 실패
+    if not topic_nodes:
+        print("그래프에 토픽 노드가 없습니다.")
+        return None
+    
+    # 토픽 노드만 포함하는 서브그래프 생성
+    topics_subgraph = graph.subgraph(topic_nodes)
+    
+    # 서브그래프가 비어있으면 실패
+    if topics_subgraph.number_of_nodes() == 0:
+        print("토픽 노드가 연결되어 있지 않습니다.")
+        return None
+    
+    # 시각화 함수 호출
+    # center_concept은 None으로 지정하여 특정 중심 없이 전체 토픽 네트워크 표시
+    return visualize_association_network(
+        graph=topics_subgraph,
+        center_concept=None,
+        save_path=save_path,
+        show=show,
+        title_prefix=title_prefix
+    )
+def visualize_topic_internal(
+    graph: nx.DiGraph,
+    topic: str,
+    save_path: Optional[str] = None,
+    show: bool = False
+) -> Optional[str]:
+    """
+    특정 토픽과 그 서브토픽 및 관련 키워드만 시각화 (다른 토픽은 제외) - 서브토픽에서 키워드 파생
+    
+    Args:
+        graph: NetworkX 그래프
+        topic: 시각화할 토픽
+        save_path: 저장 경로
+        show: 화면 표시 여부
+    
+    Returns:
+        저장된 파일 경로 또는 None
+    """
+    if not graph.has_node(topic):
+        print(f"경고: '{topic}' 토픽이 그래프에 없습니다.")
+        return None
+    
+    # 완전히 새로운 그래프 생성
+    new_graph = nx.DiGraph()
+    
+    # 1. 먼저 선택한 토픽 노드만 추가
+    new_graph.add_node(topic)
+    # 토픽 노드의 속성 복사
+    if 'metadata' in graph.nodes[topic]:
+        new_graph.nodes[topic]['metadata'] = graph.nodes[topic]['metadata'].copy() if hasattr(graph.nodes[topic]['metadata'], 'copy') else graph.nodes[topic]['metadata']
+    else:
+        # 메타데이터가 없으면 토픽 타입으로 설정
+        new_graph.nodes[topic]['metadata'] = {'type': 'topic'}
+    
+    # 2. 서브토픽 노드 추가 (계층적 관계를 가진 이웃들)
+    subtopics = []
+    for neighbor in graph.neighbors(topic):
+        if neighbor in graph[topic]:  # edge 존재 확인
+            edge_data = graph[topic][neighbor]
+            # 계층적 관계만 서브토픽으로 처리
+            if edge_data.get('type') == 'hierarchical':
+                subtopics.append(neighbor)
+                # 서브토픽 노드 추가
+                new_graph.add_node(neighbor)
+                # 속성 복사
+                if 'metadata' in graph.nodes[neighbor]:
+                    new_graph.nodes[neighbor]['metadata'] = graph.nodes[neighbor]['metadata'].copy() if hasattr(graph.nodes[neighbor]['metadata'], 'copy') else graph.nodes[neighbor]['metadata']
+                else:
+                    # 메타데이터가 없으면 서브토픽 타입으로 설정
+                    new_graph.nodes[neighbor]['metadata'] = {'type': 'subtopic'}
+                # 토픽→서브토픽 엣지 추가
+                new_graph.add_edge(topic, neighbor, **edge_data)
+    
+    # 3. 서브토픽 간 연결 추가 (의미적 관계)
+    for i, subtopic1 in enumerate(subtopics):
+        for subtopic2 in subtopics[i+1:]:
+            # 양방향 확인
+            if graph.has_edge(subtopic1, subtopic2):
+                edge_data = graph[subtopic1][subtopic2]
+                new_graph.add_edge(subtopic1, subtopic2, **edge_data)
+            if graph.has_edge(subtopic2, subtopic1):
+                edge_data = graph[subtopic2][subtopic1]
+                new_graph.add_edge(subtopic2, subtopic1, **edge_data)
+    
+    # 4. JSON에서 추출된 메모 키워드 찾기 (memo 필드에서 추출된 것들)
+    memo_keywords = {}
+    
+    # 모든 엣지를 검사하여 키워드 노드 식별
+    keyword_nodes = set()
+    for u, v, data in graph.edges(data=True):
+        # 연결 유형이 semantic 또는 키워드 관련인 경우
+        if data.get('type') != 'hierarchical':
+            # 토픽이나 서브토픽이 아닌 노드를 키워드로 간주
+            if u == topic:
+                # 토픽에 연결된 노드 중 서브토픽이 아닌 것을 키워드로 간주
+                if v not in subtopics:
+                    keyword_nodes.add(v)
+            elif u in subtopics:
+                # 서브토픽에 연결된 노드 중 토픽이나 다른 서브토픽이 아닌 것을 키워드로 간주
+                if v != topic and v not in subtopics:
+                    keyword_nodes.add(v)
+                    if u not in memo_keywords:
+                        memo_keywords[u] = []
+                    memo_keywords[u].append(v)
+            
+            # 역방향도 확인
+            if v == topic:
+                if u not in subtopics:
+                    keyword_nodes.add(u)
+            elif v in subtopics:
+                if u != topic and u not in subtopics:
+                    keyword_nodes.add(u)
+                    if v not in memo_keywords:
+                        memo_keywords[v] = []
+                    memo_keywords[v].append(u)
+    
+    # 5. 서브토픽에서 키워드로의 연결 수정 - 키워드는 서브토픽에서만 파생
+    for subtopic, keywords in memo_keywords.items():
+        for keyword in keywords:
+            # 키워드 노드 추가
+            new_graph.add_node(keyword)
+            # 속성 복사
+            if 'metadata' in graph.nodes[keyword]:
+                new_graph.nodes[keyword]['metadata'] = graph.nodes[keyword]['metadata'].copy() if hasattr(graph.nodes[keyword]['metadata'], 'copy') else graph.nodes[keyword]['metadata']
+            else:
+                # 메타데이터가 없으면 키워드 타입으로 설정
+                new_graph.nodes[keyword]['metadata'] = {'type': 'keyword'}
+            
+            # 서브토픽→키워드 엣지 추가
+            if graph.has_edge(subtopic, keyword):
+                edge_data = graph[subtopic][keyword]
+                new_graph.add_edge(subtopic, keyword, **edge_data)
+            elif graph.has_edge(keyword, subtopic):
+                edge_data = graph[keyword][subtopic]
+                # 방향 반대로 추가 (키워드→서브토픽 → 서브토픽→키워드)
+                new_graph.add_edge(subtopic, keyword, **edge_data)
+    
+    # 6. 남은 키워드들은 가장 연관이 높은 서브토픽에 연결
+    # 키워드 중 아직 그래프에 추가되지 않은 것들 처리
+    for keyword in keyword_nodes:
+        if keyword not in new_graph:
+            # 해당 키워드와 가장 관련 높은 서브토픽 찾기
+            best_subtopic = None
+            highest_weight = 0
+            
+            for subtopic in subtopics:
+                if graph.has_edge(subtopic, keyword):
+                    weight = graph[subtopic][keyword].get('weight', 0)
+                    if weight > highest_weight:
+                        highest_weight = weight
+                        best_subtopic = subtopic
+                elif graph.has_edge(keyword, subtopic):
+                    weight = graph[keyword][subtopic].get('weight', 0)
+                    if weight > highest_weight:
+                        highest_weight = weight
+                        best_subtopic = subtopic
+            
+            # 관련 서브토픽을 찾은 경우 연결
+            if best_subtopic:
+                # 키워드 노드 추가
+                new_graph.add_node(keyword)
+                # 속성 복사
+                if 'metadata' in graph.nodes[keyword]:
+                    new_graph.nodes[keyword]['metadata'] = graph.nodes[keyword]['metadata'].copy() if hasattr(graph.nodes[keyword]['metadata'], 'copy') else graph.nodes[keyword]['metadata']
+                else:
+                    new_graph.nodes[keyword]['metadata'] = {'type': 'keyword'}
+                
+                # 서브토픽→키워드 엣지 추가
+                if graph.has_edge(best_subtopic, keyword):
+                    edge_data = graph[best_subtopic][keyword]
+                    new_graph.add_edge(best_subtopic, keyword, **edge_data)
+                else:
+                    # 기본 연결 추가
+                    new_graph.add_edge(best_subtopic, keyword, type='semantic', weight=0.6)
+            else:
+                # 서브토픽과 연관이 없는 경우 토픽에 직접 연결 (마지막 대안)
+                if graph.has_edge(topic, keyword) or graph.has_edge(keyword, topic):
+                    # 키워드 노드 추가
+                    new_graph.add_node(keyword)
+                    # 속성 복사
+                    if 'metadata' in graph.nodes[keyword]:
+                        new_graph.nodes[keyword]['metadata'] = graph.nodes[keyword]['metadata'].copy() if hasattr(graph.nodes[keyword]['metadata'], 'copy') else graph.nodes[keyword]['metadata']
+                    else:
+                        new_graph.nodes[keyword]['metadata'] = {'type': 'keyword'}
+                    
+                    # 토픽→키워드 엣지 추가
+                    if graph.has_edge(topic, keyword):
+                        edge_data = graph[topic][keyword]
+                        new_graph.add_edge(topic, keyword, **edge_data)
+                    else:
+                        # 기본 연결 추가
+                        new_graph.add_edge(topic, keyword, type='semantic', weight=0.5)
+    
+    # 7. 다른 토픽이 실수로 포함되었는지 확인하고 제거
+    nodes_to_remove = []
+    for node in new_graph.nodes():
+        if node != topic:  # 선택한 토픽은 건너뛰기
+            metadata = new_graph.nodes[node].get('metadata', {})
+            # metadata가 딕셔너리이고 type이 'topic'인 경우 제거 대상
+            if isinstance(metadata, dict) and metadata.get('type') == 'topic':
+                nodes_to_remove.append(node)
+    
+    # 다른 토픽 노드 제거
+    for node in nodes_to_remove:
+        new_graph.remove_node(node)
+    
+    # 그래프가 비어있는지 확인
+    if new_graph.number_of_nodes() <= 1:  # 토픽만 있고 다른 노드가 없는 경우
+        print(f"경고: '{topic}' 토픽에 연결된 노드가 없습니다.")
+        return None
+    
+    # 디버그 정보 출력
+    node_types = {'topic': [], 'subtopic': [], 'keyword': []}
+    for node in new_graph.nodes():
+        metadata = new_graph.nodes[node].get('metadata', {})
+        if isinstance(metadata, dict) and 'type' in metadata:
+            node_type = metadata.get('type', 'unknown')
+            if node_type in node_types:
+                node_types[node_type].append(node)
+    
+    print(f"\n--- 시각화: '{topic}' 토픽 내부 연결 ---")
+    print(f"- 토픽: {len(node_types['topic'])}개")
+    print(f"- 서브토픽: {len(node_types['subtopic'])}개")
+    print(f"- 키워드: {len(node_types['keyword'])}개")
+    print(f"- 총 노드 수: {new_graph.number_of_nodes()}개")
+    print(f"- 총 엣지 수: {new_graph.number_of_edges()}개")
+    
+    # 시각화 진행 - 새로 만든 그래프 사용
+    return visualize_association_network(
+        graph=new_graph,
+        center_concept=topic,
+        save_path=save_path,
+        show=show,
+        title_prefix=f"토픽 내부 연결: {topic}"
+    )

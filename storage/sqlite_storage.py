@@ -379,3 +379,22 @@ class SQLiteStorage:
                 })
             
             return weak_connections
+        
+    async def get_all_topics(self) -> List[Dict[str, str]]:
+        """모든 토픽 정보 조회"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # 계층적 관계가 있는 개념들 조회
+            cursor.execute('''
+                SELECT DISTINCT source_concept, target_concept
+                FROM concept_connections
+                WHERE connection_type = 'hierarchical'
+            ''')
+            
+            rows = cursor.fetchall()
+            
+            # 소스 개념을 토픽으로 간주
+            topics = [{'source_concept': row[0], 'target_concept': row[1]} for row in rows]
+            
+            return topics
